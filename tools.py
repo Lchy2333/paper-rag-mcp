@@ -1,8 +1,8 @@
 """三个只读 tool 的注册、身份解析与出参裁剪（DESIGN.md §5）。
 
 铁律（§4.1）：这里的函数签名就是发给 LLM 的 schema，**不得出现**
-user_id / api_key / Authorization。身份只从请求头或 PAPER_RAG_TOKEN 取，
-由 auth.resolve_user() 换出可信 user_id。
+user_id / api_key / Authorization。身份只从请求头、PAPER_RAG_TOKEN 或
+login.py 写入的凭据文件取，由 auth.resolve_user() 换出可信 user_id。
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from pydantic import Field
 
 import rag_client
 from auth import AuthServiceUnavailable, Unauthorized, resolve_user
-from config import settings
+from config import load_credentials, settings
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +32,10 @@ _GET_DESC = "按 document_id 获取单个论文文档的元信息与处理状态
 
 
 def _token_from(ctx: Context | None) -> str:
-    """优先取本次请求的 Authorization: Bearer；stdio 回退到环境变量。
+    """优先取本次请求的 Authorization: Bearer；再退到环境变量；最后退到凭据文件。
 
     HTTP 传输才有 headers；stdio 下 ctx.request_context 会抛 ValueError，
-    测试里也可能没有请求上下文，因此一律兜底到 PAPER_RAG_TOKEN。
+    测试里也可能没有请求上下文，因此一律兜底到本地身份（env / 凭据文件）。
     """
     if ctx is not None:
         try:
@@ -49,7 +49,9 @@ def _token_from(ctx: Context | None) -> str:
                 scheme, _, token = value.partition(" ")
                 if scheme.lower() == "bearer" and token.strip():
                     return token.strip()
-    return settings.paper_rag_token.strip()
+    if settings.paper_rag_token.strip():
+        return settings.paper_rag_token.strip()
+    return load_credentials()
 
 
 # ── 返回构造 ────────────────────────────────────────────────────────────

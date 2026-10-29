@@ -1,0 +1,9 @@
+# 本地密钥与开发文件，绝不进镜像（配置由 compose env_file 注入）
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+.git/
+.claude/
