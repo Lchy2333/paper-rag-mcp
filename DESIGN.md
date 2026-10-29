@@ -355,10 +355,38 @@ def search(query: str, top_k: int, document_ids: list[str] | None, user_id: str)
 
 | 传输 | 身份绑定方式 | 适用 |
 |---|---|---|
-| `stdio` | 进程级：从 `PAPER_RAG_TOKEN` 环境变量读用户 token；token 过期需重启/重配 | 本地单人、开发调试 |
+| `stdio` | 进程级：用户身份按「`PAPER_RAG_TOKEN` 环境变量 > 凭据文件」取（凭据文件由 `login.py` 写入，见 §6.4）；token 过期重跑 `login.py` | 本地单人、开发调试 |
 | `streamable-http` | 连接级：每次 HTTP 请求的 `Authorization: Bearer`，MCP 逐请求解析 | 多人共用、远程 |
 
 MCP 协议**没有**「每次 `tools/call` 追加自定义 header」的能力，因此身份只能在建连/进程启动时绑定，不能按调用动态塞。
+
+### 6.4 login.py：浏览器登录 helper（v1 已实现）
+
+把 §4.2 ①「登录只在浏览器里发生一次」落成命令：`python login.py`。
+
+```
+本机 127.0.0.1 随机端口起临时服务（内置登录页 + /submit 代理）
+  → 打开浏览器，用户在**本机登录页**输入用户名密码
+  → 本地服务代理转发 Agent POST /api/auth/login（服务端到服务端，不受浏览器 CORS 限制）
+  → JWT 写入凭据文件（默认 ~/.paper-rag-mcp/credentials.json）→ 服务退出
+```
+
+设计取舍：登录页**内置在 login.py**，不改造前端仓库——代理转发绕开了 CORS，
+前端零改动即可用；token 也不进浏览器地址栏（对比「前端回跳」方案）。
+
+安全要点：
+
+- 只绑 `127.0.0.1` + 随机端口；登录成功即退出，超时 5 分钟自动关闭。
+- 表单携带一次性 `state`，`/submit` 校验，防本机端口被其他网页 CSRF。
+- 密码/token 不落日志（token 只输出 sha256 指纹），不进 URL。
+- token 全程只落在运行命令的这台机器上；凭据文件 0600 权限（Windows 尽力而为）。
+- 禁止把 admin 的 token 写进凭据文件（§9）。
+
+远端部署预留：登录页指向 `AGENT_BASE_URL`（改 `.env` 即指向远端 Agent）；
+http 模式下命令结束打印可直接粘贴的客户端配置片段（提示替换为服务器地址）。
+
+局限（对照 §4.6）：token 过期需重跑 `login.py`；完整方案是 MCP 标准 OAuth
+（客户端自动完成授权码 + PKCE，Agent 需实现授权服务器端点），P2 之前不做。
 
 ---
 
@@ -368,10 +396,11 @@ MCP 协议**没有**「每次 `tools/call` 追加自定义 header」的能力，
 |---|---|---|---|
 | `RAG_BASE_URL` | ✅ | `http://paper-rag-backend:8080` | RAG 服务地址 |
 | `RAG_API_KEY` | ✅ | `sk-mcp-…` | **MCP 专属**的服务级密钥（见 §8.2） |
-| `AGENT_BASE_URL` | ✅ | `http://paper-rag-agent:8000` | introspection 目标 |
+| `AGENT_BASE_URL` | ✅ | `http://paper-rag-agent:8000` | introspection 目标（login.py 的登录页也指向它） |
 | `MCP_TRANSPORT` | ✅ | `stdio` \| `streamable-http` | 传输方式 |
 | `MCP_HOST` / `MCP_PORT` | http 时必填 | `0.0.0.0` / `8765` | 监听地址 |
-| `PAPER_RAG_TOKEN` | stdio 时必填 | `<用户 JWT>` | 用户身份；禁止填 admin token |
+| `PAPER_RAG_TOKEN` | ❌（手工覆盖入口） | `<用户 JWT>` | 优先级高于凭据文件；禁止填 admin token |
+| `PAPER_RAG_CREDENTIALS_FILE` | ❌ | `~/.paper-rag-mcp/credentials.json` | `login.py` 写入的凭据文件路径 |
 | `SEARCH_TIMEOUT` | ❌ | `90` | 秒 |
 | `INTROSPECT_CACHE_TTL` | ❌ | `60` | 秒，且不得超过 token 剩余有效期 |
 

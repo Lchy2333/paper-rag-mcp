@@ -183,11 +183,13 @@ def stub_url():
 
 
 @pytest.fixture(autouse=True)
-def env(stub_url, monkeypatch):
+def env(stub_url, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "rag_base_url", stub_url)
     monkeypatch.setattr(settings, "agent_base_url", stub_url)
     monkeypatch.setattr(settings, "rag_api_key", API_KEY)
     monkeypatch.setattr(settings, "paper_rag_token", "")
+    # 凭据文件兜底链：指向空文件路径，避免读到测试机的真实 ~/.paper-rag-mcp/credentials.json
+    monkeypatch.setattr(settings, "credentials_file", str(tmp_path / "credentials.json"))
     monkeypatch.setattr(settings, "introspect_cache_ttl", 60)
     monkeypatch.setattr(settings, "introspect_timeout", 5.0)
     monkeypatch.setattr(settings, "search_timeout", 10.0)

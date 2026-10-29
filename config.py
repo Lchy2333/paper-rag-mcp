@@ -2,11 +2,13 @@
 
 约定（DESIGN.md §7）：
 - RAG_API_KEY 只存在于本进程环境变量，不下发给任何终端用户，不进日志/响应体。
-- stdio 模式必须配置 PAPER_RAG_TOKEN（用户 JWT）；streamable-http 模式从每次 HTTP
-  请求的 Authorization 头取 token，不读环境变量。
+- stdio 模式的用户身份：PAPER_RAG_TOKEN 环境变量 > login.py 写入的凭据文件；
+  streamable-http 模式从每次 HTTP 请求的 Authorization 头取 token，不读本项。
 - 启动校验放在 main() 里调用（不在 import 时），便于测试/CI 无 .env 也能 import。
 """
+import json
 import logging
+import time
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -36,8 +38,11 @@ class Settings(BaseSettings):
     mcp_host: str = "127.0.0.1"
     mcp_port: int = 8765
 
-    # stdio 模式下的用户身份（用户 JWT）；禁止填 admin token（DESIGN.md §9）
+    # stdio 模式下的用户身份（用户 JWT）；优先级高于凭据文件。禁止填 admin token（DESIGN.md §9）
     paper_rag_token: str = ""
+
+    # login.py 写入的凭据文件路径；空 = 默认 ~/.paper-rag-mcp/credentials.json
+    credentials_file: str = ""
 
     # ── 超时 ──
     search_timeout: float = 90.0  # 检索读超时（与 RAGtools.json 的 search_rag 对齐）
@@ -60,11 +65,46 @@ class Settings(BaseSettings):
             raise RuntimeError(f"MCP_TRANSPORT 只能是 stdio 或 streamable-http，当前: {self.mcp_transport}")
         if not self.rag_api_key.strip():
             logger.warning("RAG_API_KEY 为空：调用 RAG 将不带 X-API-Key（仅适用于 RAG 未启用鉴权的本地开发环境）")
-        if self.mcp_transport == "stdio" and not self.paper_rag_token.strip():
+        if self.mcp_transport == "stdio" and not self.paper_rag_token.strip() and not load_credentials():
             raise RuntimeError(
-                "stdio 模式必须配置 PAPER_RAG_TOKEN（用户在浏览器登录页拿到的 JWT）。"
-                "不要把 admin 的 token 配进来。"
+                "stdio 模式缺少用户身份：运行 `python login.py` 通过浏览器登录，"
+                "或在 .env 配置 PAPER_RAG_TOKEN。不要把 admin 的 token 配进来。"
             )
 
 
 settings = Settings()
+
+
+# ── 凭据文件（login.py 写入的用户 JWT）──────────────────────────────────
+
+
+def credentials_path() -> Path:
+    """凭据文件路径：显式配置优先，否则默认 ~/.paper-rag-mcp/credentials.json。"""
+    custom = settings.credentials_file.strip()
+    if custom:
+        return Path(custom)
+    return Path.home() / ".paper-rag-mcp" / "credentials.json"
+
+
+def save_credentials(token: str) -> Path:
+    """把 login.py 拿到的 JWT 写入凭据文件（0600 权限，Windows 上尽力而为）。"""
+    path = credentials_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"access_token": token, "saved_at": int(time.time())}
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:  # Windows 文件权限模型不同，忽略
+        pass
+    return path
+
+
+def load_credentials() -> str:
+    """读凭据文件里的 JWT；不存在/损坏/为空一律返回空串。"""
+    path = credentials_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    token = data.get("access_token") if isinstance(data, dict) else None
+    return token.strip() if isinstance(token, str) else ""
