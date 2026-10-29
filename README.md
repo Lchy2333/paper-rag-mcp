@@ -39,7 +39,7 @@ MCP 协议不支持在 `tools/call` 里附加 header，身份只能在建立连�
 
 ## 前置条件
 
-1. **paper-rag-agent** 需提供身份校验接口（本仓库依赖，不含该实现）：
+1. **paper-rag-agent** 身份校验接口（✅ 已提供，agent 仓 dev 分支）：
 
    ```
    POST /api/auth/introspect

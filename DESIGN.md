@@ -410,14 +410,23 @@ http 模式下命令结束打印可直接粘贴的客户端配置片段（提示
 
 ## 8. 需要本目录之外的改动
 
-### 8.1 Agent：新增 introspection 接口（P0 前置）
+### 8.1 Agent：新增 introspection 接口（✅ 已实现，agent 仓 dev 分支 8e62114）
 
 ```python
-# paper-rag-agent/app/api/auth.py 追加
+# paper-rag-agent/app/api/auth.py（已合入）
 @router.post("/introspect")
-def introspect(user=CurrentUser):
-    """服务间身份校验：Bearer JWT → 可信用户信息。仅供后端服务调用。"""
-    return {"user_id": user["id"], "username": user["username"], "disabled": user["disabled"]}
+def introspect(request: Request, user: Dict[str, Any] = CurrentUser) -> Dict[str, Any]:
+    """服务间身份校验：Bearer JWT → 可信用户信息（不含 token / 密钥）。"""
+    exp = None
+    authorization = request.headers.get("authorization") or ""
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() == "bearer" and token.strip():
+        try:
+            exp = decode_token(token.strip()).get("exp")
+        except jwt.InvalidTokenError:
+            exp = None
+    return {"user_id": str(user["id"]), "username": user["username"],
+            "disabled": bool(user["disabled"]), "exp": exp}
 ```
 
 要点：
