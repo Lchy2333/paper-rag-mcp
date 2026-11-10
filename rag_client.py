@@ -15,6 +15,7 @@ from urllib.parse import quote
 import requests
 
 from config import settings
+from request_context import request_id_var
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,8 @@ def _base() -> str:
 
 
 def _headers(user_id: str) -> dict[str, str]:
-    headers = {"X-User-ID": user_id}
+    # X-Request-ID：跨进程链路追踪——RAG 的 [ACCESS] 与本进程日志记同一个 rid
+    headers = {"X-User-ID": user_id, "X-Request-ID": request_id_var.get()}
     api_key = settings.rag_api_key.strip()
     if api_key:
         headers["X-API-Key"] = api_key

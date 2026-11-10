@@ -19,6 +19,7 @@ import time
 import requests
 
 from config import settings
+from request_context import request_id_var
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,11 @@ def resolve_user(token: str) -> dict:
     try:
         resp = requests.post(
             url,
-            headers={"Authorization": f"Bearer {token}"},
+            headers={
+                "Authorization": f"Bearer {token}",
+                # 跨进程链路追踪：让 Agent 侧 [ACCESS] 与本次 MCP 工具调用记同一个 rid
+                "X-Request-ID": request_id_var.get(),
+            },
             timeout=settings.introspect_timeout,
         )
     except requests.RequestException as exc:

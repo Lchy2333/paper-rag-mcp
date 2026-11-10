@@ -17,6 +17,7 @@ from pydantic import Field
 import rag_client
 from auth import AuthServiceUnavailable, Unauthorized, resolve_user
 from config import load_credentials, settings
+from request_context import new_request_id, request_id_var
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,26 @@ def _token_from(ctx: Context | None) -> str:
     return load_credentials()
 
 
+def _rid_from_ctx(ctx: Context | None) -> str:
+    """streamable-http 下透传上游 X-Request-ID（多级调用链可携带）。
+
+    HTTP 传输才有 headers；stdio 下 ctx.request_context 抛 ValueError，
+    测试里 ctx 也可能为 None——一律返回空串，由 _handle 落到自生成。
+    """
+    if ctx is None:
+        return ""
+    try:
+        headers = ctx.headers
+    except Exception:
+        return ""
+    if not headers:
+        return ""
+    for name, value in headers.items():
+        if name.lower() == "x-request-id" and value.strip():
+            return value.strip()
+    return ""
+
+
 # ── 返回构造 ────────────────────────────────────────────────────────────
 
 
@@ -73,31 +94,42 @@ def _error(message: str) -> CallToolResult:
 
 
 def _handle(ctx: Context, tool_name: str, fn) -> CallToolResult:
-    """统一解析身份 + 错误语义（§5.4）。fn 接收可信 user_id，返回 CallToolResult。"""
-    token = _token_from(ctx)
+    """统一解析身份 + 错误语义 + 链路追踪 rid（§5.4）。fn 接收可信 user_id，返回 CallToolResult。
+
+    rid：优先透传上游 X-Request-ID，否则每个 tools/call 自生成一个——
+    stdio 模式下每条 JSON-RPC 请求就是一次用户动作。
+    set/reset 成对执行（外层 try/finally），日志 Filter 只在本次调用的
+    日志行上读到该 rid；rag_client / auth 出站请求头携带同一 id。
+    """
+    rid = _rid_from_ctx(ctx) or new_request_id()
+    rid_token = request_id_var.set(rid)
     try:
-        user = resolve_user(token)
-        return fn(user["user_id"])
-    except Unauthorized:
-        return _error("未登录或登录已过期")
-    except AuthServiceUnavailable:
-        logger.warning("tool_identity_unavailable tool=%s", tool_name)
-        return _error("身份校验服务暂不可用，请稍后重试")
-    except rag_client.RagError as exc:
-        if exc.status is not None:
-            # 4xx：透传 RAG 的业务文案（如「文档不存在」）
-            return _error(exc.message)
-        logger.warning("tool_rag_error tool=%s stage=%s msg=%s", tool_name, exc.stage, exc.message)
-        message = "检索服务暂不可用，请稍后重试"
-        if exc.stage:
-            message = f"{message}（stage: {exc.stage}）"
-        return _error(message)
-    except rag_client.RagUnavailable:
-        logger.warning("tool_rag_unavailable tool=%s", tool_name)
-        return _error("检索服务暂不可用，请稍后重试")
-    except Exception:
-        logger.exception("tool_internal_error tool=%s", tool_name)
-        return _error("服务内部错误，请稍后重试")
+        token = _token_from(ctx)
+        try:
+            user = resolve_user(token)
+            return fn(user["user_id"])
+        except Unauthorized:
+            return _error("未登录或登录已过期")
+        except AuthServiceUnavailable:
+            logger.warning("tool_identity_unavailable tool=%s", tool_name)
+            return _error("身份校验服务暂不可用，请稍后重试")
+        except rag_client.RagError as exc:
+            if exc.status is not None:
+                # 4xx：透传 RAG 的业务文案（如「文档不存在」）
+                return _error(exc.message)
+            logger.warning("tool_rag_error tool=%s stage=%s msg=%s", tool_name, exc.stage, exc.message)
+            message = "检索服务暂不可用，请稍后重试"
+            if exc.stage:
+                message = f"{message}（stage: {exc.stage}）"
+            return _error(message)
+        except rag_client.RagUnavailable:
+            logger.warning("tool_rag_unavailable tool=%s", tool_name)
+            return _error("检索服务暂不可用，请稍后重试")
+        except Exception:
+            logger.exception("tool_internal_error tool=%s", tool_name)
+            return _error("服务内部错误，请稍后重试")
+    finally:
+        request_id_var.reset(rid_token)
 
 
 # ── 出参限额（§5.3）────────────────────────────────────────────────────
