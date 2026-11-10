@@ -11,6 +11,7 @@ import sys
 from mcp.server.mcpserver import MCPServer
 
 from config import settings
+from request_context import request_id_var
 from tools import register_all
 
 logger = logging.getLogger(__name__)
@@ -30,13 +31,36 @@ mcp = MCPServer(
 register_all(mcp)
 
 
+class RequestIdFilter(logging.Filter):
+    """与 agent 仓同机制：每条日志输出前现场读 contextvar，把 rid 贴进记录。
+
+    Filter 是钩子不是快照——每条日志经过时执行一次 request_id_var.get()，
+    tools/_handle 里 set 的 rid 因此出现在本次调用产生的所有日志行上。
+    """
+
+    def filter(self, record):
+        record.request_id = request_id_var.get()
+        return True
+
+
 def _configure_logging() -> None:
-    """日志必须写 stderr：stdio 传输的 stdout 是 JSON-RPC 通道，写入即破坏协议。"""
-    logging.basicConfig(
-        level=logging.INFO,
-        stream=sys.stderr,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    """日志必须写 stderr：stdio 传输的 stdout 是 JSON-RPC 通道，写入即破坏协议。
+
+    注意：mcp SDK 在 import 时已给 root 装了 handler（裸 %(message)s），
+    logging.basicConfig 此时是空操作（它只在 root 无 handler 时生效），
+    所以必须直接改写已有 handler 的 formatter，否则格式与 rid 都不会生效。
+    """
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    if not root.handlers:
+        root.addHandler(logging.StreamHandler(sys.stderr))
+    formatter = logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s [%(request_id)s] %(message)s"
     )
+    # 关卡挂 root 的所有 handler：MCP 全部 logger（tools/auth/rag_client）都冒泡到 root 输出
+    for handler in root.handlers:
+        handler.setFormatter(formatter)
+        handler.addFilter(RequestIdFilter())
 
 
 def main() -> None:
